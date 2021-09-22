@@ -1,0 +1,5 @@
+1. page 0 contains the content of the ELF image, at kernel/exec.c:52 where it will malloc pages
+   using uvmalloc and then load segments into it.
+2. page 2 contain the user stack.
+3. page 1 cannot be read/write as it is a guard page for overflow.
+
