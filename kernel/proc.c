@@ -31,6 +31,7 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
+      /*
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
@@ -40,8 +41,9 @@ procinit(void)
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
+      */
   }
-  kvminithart();
+  // kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -121,6 +123,29 @@ found:
     return 0;
   }
 
+  uint64 va = 0;
+  uint64 pa = 0;
+  if (p->kstack == 0) {
+    // Allocate a page for the process's kernel stack.
+    // Map it high in memory, followed by an invalid
+    // guard page.
+    pa = (uint64)kalloc();
+    if (pa == 0)
+      panic("kalloc");
+    va = KSTACK((int)(p - proc));
+    kvmmap(va, pa, PGSIZE, PTE_R | PTE_W);
+    p->kstack = va;
+    kvminithart();
+  } else {
+    va = p->kstack;
+    pa = kvmpa(va);
+  }
+  // create process's kernel page table
+  p->kpagetable = kvminit_copy();
+  // Map process's kernel stack in its kernel page table
+  if (mappages(p->kpagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W) != 0)
+    panic("mappages");
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -128,6 +153,22 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+}
+
+static void
+proc_freekpagetable(pagetable_t kpagetable, int level)
+{
+  if (level > 3)
+    return;
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = kpagetable[i];
+    if ((pte & PTE_V)) {
+      uint64 child = PTE2PA(pte);
+      proc_freekpagetable((pagetable_t)child, level + 1);
+      kpagetable[i] = 0;
+    }
+  }
+  kfree((void*)kpagetable);
 }
 
 // free a proc structure and the data hanging from it,
@@ -141,6 +182,8 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->kpagetable)
+    proc_freekpagetable(p->kpagetable, 1);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -473,6 +516,8 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -487,6 +532,7 @@ scheduler(void)
     if(found == 0) {
       intr_on();
       asm volatile("wfi");
+      kvminithart();
     }
 #else
     ;

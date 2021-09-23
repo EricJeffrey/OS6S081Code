@@ -47,6 +47,45 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+pagetable_t
+kvminit_copy()
+{
+  pagetable_t pagetable = (pagetable_t) kalloc();
+  memset(pagetable, 0, PGSIZE);
+
+  // uart registers
+  if (mappages(pagetable, UART0, PGSIZE, UART0, PTE_R | PTE_W) != 0)
+    goto kvminit_copy_bad;
+
+  // virtio mmio disk interface
+  if (mappages(pagetable, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) != 0)
+    goto kvminit_copy_bad;
+
+  // CLINT
+  if (mappages(pagetable, CLINT, 0x10000, CLINT, PTE_R | PTE_W) != 0)
+    goto kvminit_copy_bad;
+
+  // PLIC
+  if (mappages(pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W) != 0)
+    goto kvminit_copy_bad;
+
+  // map kernel text executable and read-only.
+  if (mappages(pagetable, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X) != 0)
+    goto kvminit_copy_bad;
+
+  // map kernel data and the physical RAM we'll make use of.
+  if (mappages(pagetable, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W) != 0)
+    goto kvminit_copy_bad;
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  if (mappages(pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) != 0)
+    goto kvminit_copy_bad;
+  return pagetable;
+kvminit_copy_bad:
+  panic("kvminit_copy");
+}
+
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
