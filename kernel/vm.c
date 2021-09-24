@@ -51,6 +51,8 @@ pagetable_t
 kvminit_copy()
 {
   pagetable_t pagetable = (pagetable_t) kalloc();
+  if (pagetable == 0)
+    goto kvminit_copy_bad;
   memset(pagetable, 0, PGSIZE);
 
   // uart registers
@@ -83,6 +85,8 @@ kvminit_copy()
     goto kvminit_copy_bad;
   return pagetable;
 kvminit_copy_bad:
+  if (pagetable != 0)
+    kfree((void*)pagetable);
   panic("kvminit_copy");
 }
 

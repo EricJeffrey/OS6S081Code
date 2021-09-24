@@ -31,7 +31,6 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
-      /*
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
@@ -41,9 +40,8 @@ procinit(void)
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
-      */
   }
-  // kvminithart();
+  kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -123,28 +121,17 @@ found:
     return 0;
   }
 
-  uint64 va = 0;
-  uint64 pa = 0;
-  if (p->kstack == 0) {
-    // Allocate a page for the process's kernel stack.
-    // Map it high in memory, followed by an invalid
-    // guard page.
-    pa = (uint64)kalloc();
-    if (pa == 0)
-      panic("kalloc");
-    va = KSTACK((int)(p - proc));
-    kvmmap(va, pa, PGSIZE, PTE_R | PTE_W);
-    p->kstack = va;
-    kvminithart();
-  } else {
-    va = p->kstack;
-    pa = kvmpa(va);
-  }
+  uint64 va = p->kstack;
+  uint64 pa = kvmpa(va);
   // create process's kernel page table
   p->kpagetable = kvminit_copy();
   // Map process's kernel stack in its kernel page table
-  if (mappages(p->kpagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W) != 0)
-    panic("mappages");
+  if (mappages(p->kpagetable, va, PGSIZE, pa, PTE_R | PTE_W) != 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+    // panic("allocproc");
+  }
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -184,6 +171,7 @@ freeproc(struct proc *p)
     proc_freepagetable(p->pagetable, p->sz);
   if (p->kpagetable)
     proc_freekpagetable(p->kpagetable, 1);
+  p->kpagetable = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -530,9 +518,9 @@ scheduler(void)
     }
 #if !defined (LAB_FS)
     if(found == 0) {
+      kvminithart();
       intr_on();
       asm volatile("wfi");
-      kvminithart();
     }
 #else
     ;
