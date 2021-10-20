@@ -163,6 +163,7 @@ copyinstr2(char *s)
   }
 
   int pid = fork();
+  printf("DEBUG-fork-pid:%d\n", pid);
   if(pid < 0){
     printf("fork failed\n");
     exit(1);
@@ -2604,6 +2605,7 @@ run(void f(char *), char *s) {
     printf("runtest: fork error\n");
     exit(1);
   }
+  printf("DEBUG-run-fork-pid:%d\n", pid);
   if(pid == 0) {
     f(s);
     exit(0);

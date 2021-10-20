@@ -121,12 +121,9 @@ found:
     return 0;
   }
 
-  uint64 va = p->kstack;
-  uint64 pa = kvmpa(va);
   // create process's kernel page table
-  p->kpagetable = kvminit_copy();
-  // Map process's kernel stack in its kernel page table
-  if (mappages(p->kpagetable, va, PGSIZE, pa, PTE_R | PTE_W) != 0) {
+  p->kpagetable = proc_kpagetable(p);
+  if (p->kpagetable == 0) {
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -142,20 +139,28 @@ found:
   return p;
 }
 
-static void
-proc_freekpagetable(pagetable_t kpagetable, int level)
+pagetable_t
+proc_kpagetable(struct proc *p)
 {
-  if (level > 3)
-    return;
-  for (int i = 0; i < 512; i++) {
-    pte_t pte = kpagetable[i];
-    if ((pte & PTE_V)) {
-      uint64 child = PTE2PA(pte);
-      proc_freekpagetable((pagetable_t)child, level + 1);
-      kpagetable[i] = 0;
-    }
-  }
-  kfree((void*)kpagetable);
+  uint64 va = p->kstack;
+  uint64 pa = kvmpa(va);
+  pagetable_t kpagetable = kvminit_copy();
+  // Map process's kernel stack in its kernel page table
+  if (mappages(kpagetable, va, PGSIZE, pa, PTE_R | PTE_W) != 0)
+    return 0;
+  return kpagetable;
+}
+
+void
+proc_freekpagetable(pagetable_t kpagetable, uint64 uvmsz, uint64 va_kstack)
+{
+  kvmunmap(kpagetable);
+  uvmunmap(kpagetable, va_kstack, 1, 0);
+  if (uvmsz >= CLINT)
+    panic("proc_freekpagetable: uvmsz >= CLINT");
+  if (uvmsz > 0)
+    uvmunmap(kpagetable, 0, PGROUNDUP(uvmsz) / PGSIZE, 0);
+  freewalk(kpagetable);
 }
 
 // free a proc structure and the data hanging from it,
@@ -170,7 +175,7 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   if (p->kpagetable)
-    proc_freekpagetable(p->kpagetable, 1);
+    proc_freekpagetable(p->kpagetable, p->sz, p->kstack);
   p->kpagetable = 0;
   p->pagetable = 0;
   p->sz = 0;
@@ -250,6 +255,8 @@ userinit(void)
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
+  if (mappages(p->kpagetable, 0, PGSIZE, walkaddr(p->pagetable, 0), PTE_W|PTE_R|PTE_X) != 0)
+    panic("userinit: mappages failed");
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
@@ -274,11 +281,11 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = uvmalloc_with_kpgtbl(p->pagetable, sz, sz + n, p->kpagetable)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc_with_kpgtbl(p->pagetable, sz, sz + n, p->kpagetable);
   }
   p->sz = sz;
   return 0;
@@ -304,6 +311,13 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+  // Copy kernel page table mappings
+  if (copy_pagetable(p->kpagetable, np->kpagetable, p->sz) < 0) {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+
   np->sz = p->sz;
 
   np->parent = p;
@@ -502,10 +516,9 @@ scheduler(void)
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+        uvminithart(p->kpagetable);
         p->state = RUNNING;
         c->proc = p;
-        w_satp(MAKE_SATP(p->kpagetable));
-        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.

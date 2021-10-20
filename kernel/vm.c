@@ -83,11 +83,25 @@ kvminit_copy()
   // the highest virtual address in the kernel.
   if (mappages(pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) != 0)
     goto kvminit_copy_bad;
+
   return pagetable;
-kvminit_copy_bad:
+
+ kvminit_copy_bad:
   if (pagetable != 0)
     kfree((void*)pagetable);
   panic("kvminit_copy");
+}
+
+void
+kvmunmap(pagetable_t kpagetable)
+{
+  uvmunmap(kpagetable, UART0, 1, 0);
+  uvmunmap(kpagetable, VIRTIO0, 1, 0);
+  uvmunmap(kpagetable, CLINT, 0x10000 / PGSIZE, 0);
+  uvmunmap(kpagetable, PLIC, 0x400000 / PGSIZE, 0);
+  uvmunmap(kpagetable, KERNBASE, ((uint64)etext-KERNBASE) / PGSIZE, 0);
+  uvmunmap(kpagetable, (uint64)etext, (PHYSTOP-(uint64)etext) / PGSIZE, 0);
+  uvmunmap(kpagetable, TRAMPOLINE, 1, 0);
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -96,6 +110,13 @@ void
 kvminithart()
 {
   w_satp(MAKE_SATP(kernel_pagetable));
+  sfence_vma();
+}
+
+void
+uvminithart(pagetable_t pagetable)
+{
+  w_satp(MAKE_SATP(pagetable));
   sfence_vma();
 }
 
@@ -271,27 +292,43 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
+  return uvmalloc_with_kpgtbl(pagetable, oldsz, newsz, 0);
+}
+
+uint64
+uvmalloc_with_kpgtbl(pagetable_t pagetable, uint64 oldsz, uint64 newsz, pagetable_t kpagetable)
+{
   char *mem;
   uint64 a;
 
   if(newsz < oldsz)
     return oldsz;
+  if (newsz >= CLINT)
+    return 0;
 
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
-    if(mem == 0){
-      uvmdealloc(pagetable, a, oldsz);
-      return 0;
-    }
+    if(mem == 0)
+      goto err;
     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
-      kfree(mem);
-      uvmdealloc(pagetable, a, oldsz);
-      return 0;
+
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0)
+      goto err;
+    if (kpagetable != 0) {
+      if (mappages(kpagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R) != 0) {
+        uvmunmap(pagetable, a, PGSIZE, 1);
+        goto err;
+      }
     }
   }
   return newsz;
+
+ err:
+  if (mem != 0)
+    kfree(mem);
+  uvmdealloc_with_kpgtbl(pagetable, a, oldsz, kpagetable);
+  return 0;
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -301,14 +338,23 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 uint64
 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
-  if(newsz >= oldsz)
-    return oldsz;
+  return uvmdealloc_with_kpgtbl(pagetable, oldsz, newsz, 0);
+}
 
-  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+uint64
+uvmdealloc_with_kpgtbl(pagetable_t pagetable, uint64 oldsz, uint64 newsz, pagetable_t kpagetable)
+{
+  if (newsz >= oldsz)
+    return oldsz;
+  if (PGROUNDUP(newsz) < PGROUNDUP(oldsz)) {
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    if (kpagetable != 0) {
+      if (PGROUNDUP(newsz) >= CLINT)
+        panic("uvmdealloc_with_kpgtbl: PGROUNDUP(newsz) >= CLINT");
+      uvmunmap(kpagetable, PGROUNDUP(newsz), npages, 0);
+    }
   }
-
   return newsz;
 }
 
@@ -416,12 +462,15 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   return 0;
 }
 
+extern int copyin_new(pagetable_t, char*, uint64, uint64);
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  return copyin_new(pagetable, dst, srcva, len);
+
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -441,6 +490,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   return 0;
 }
 
+extern int copyinstr_new(pagetable_t, char*, uint64, uint64);
 // Copy a null-terminated string from user to kernel.
 // Copy bytes to dst from virtual address srcva in a given page table,
 // until a '\0', or max.
@@ -448,6 +498,8 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  // return copyinstr_new(pagetable, dst, srcva, max);
+
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -484,7 +536,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-void walk_pagetable(pagetable_t pagetable, int level)
+void traverse_pagetable(pagetable_t pagetable, int level)
 {
   if (level > 3)
     return;
@@ -495,12 +547,33 @@ void walk_pagetable(pagetable_t pagetable, int level)
         printf(j != 0 ? " ..": "..");
       printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
       uint64 child = PTE2PA(pte);
-      walk_pagetable((pagetable_t)child, level + 1);
+      traverse_pagetable((pagetable_t)child, level + 1);
     }
   }
 }
+
 void vmprint(pagetable_t pagetable)
 {
   printf("page table %p\n", pagetable);
-  walk_pagetable(pagetable, 1);
+  traverse_pagetable(pagetable, 1);
+}
+
+int copy_pagetable(pagetable_t srcp, pagetable_t dstp, uint sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+  for (i = 0; i < sz && i < CLINT; i += PGSIZE) {
+    if ((pte = walk(srcp, i, 0)) != 0 && (*pte & PTE_V) != 0) {
+      pa = PTE2PA(*pte);
+      flags = PTE_FLAGS(*pte);
+      if (mappages(dstp, i, PGSIZE, pa, flags) != 0) {
+        goto err;
+      }
+    }
+  }
+  return 0;
+ err:
+  uvmunmap(dstp, 0, i / PGSIZE, 0);
+  return -1;
 }
