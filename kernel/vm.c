@@ -469,7 +469,7 @@ extern int copyin_new(pagetable_t, char*, uint64, uint64);
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  return copyin_new(pagetable, dst, srcva, len);
+  // return copyin_new(pagetable, dst, srcva, len);
 
   uint64 n, va0, pa0;
 
