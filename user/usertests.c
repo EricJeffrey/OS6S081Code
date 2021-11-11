@@ -964,6 +964,7 @@ reparent2(char *s)
       exit(0);
     }
     wait(0);
+    // printf("DEBUG-i:%d\n", i);
   }
 
   exit(0);
