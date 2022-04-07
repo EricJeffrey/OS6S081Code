@@ -1,0 +1,6 @@
+1. a0 a1 a2 contain arguments, a2 holds 13
+2. f/g is either optimized(with O1 or O2 flag) or explicitly called using call
+3. 628 is the address of printf
+4. the value of ra is 38, cause jalr will push the PC+4 to the destination register.
+5. output: He110 World; i = 0x726c6400; no need to change 57616, cause its hex form is always 110
+6. some value from the register a1
