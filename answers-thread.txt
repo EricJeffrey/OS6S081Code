@@ -1,0 +1,7 @@
+because caller-saved will be saved on the stack by compiler
+because gdb only load the symbol from uthread, and it assume uthread as the executable, thus any execution in will hit there
+
+
+tow insert with the same table[i] may break the put; when two thread both set the e->next to n, and
+only one thread succeed to make *p (i.e. table[i]) to the malloced pointer e. thus one insert lost
+
